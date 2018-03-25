@@ -1,4 +1,4 @@
-pragma solidity ^0.4.16;
+pragma solidity ^0.4.19;
 
 /**
  * TokenERC223 standard. The ERC20 token standard has a fundamental issue as it has not addressed the token fallback possibility.
