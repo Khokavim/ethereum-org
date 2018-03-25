@@ -4,7 +4,7 @@
 
 This repository contains the Homestead Release of the [ethereum.org](https://ethereum.org/) website.
 
-# Updated with ERC223 token standard !and Math operations with safety checks
+# Updated with ERC223 token standard and Math operations with safety checks
 
 ![Screenshot](https://cloud.githubusercontent.com/assets/112898/15186824/f2c9ba56-1774-11e6-944b-8309c6b9114e.png "Screenshot")
 
