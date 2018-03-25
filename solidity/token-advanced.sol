@@ -221,8 +221,7 @@ contract TokenERC223 {
      * @param _value the amount of money to burn
      */
     function burnFrom(address _from, uint256 _value) public returns (bool success) {
-        require(balanceOf[_from] >= _value);                // Check if the targeted balance is enough
-        require(_value <= allowance[_from][msg.sender]);    // Check allowance
+        require(balanceOf[_from] >= _value && _value <= allowance[_from][msg.sender]); // Check if the targeted balance is enough and check allowance
         balanceOf[_from].sub(_value);                         // Subtract from the targeted balance
         allowance[_from][msg.sender].sub(_value);             // Subtract from the sender's allowance
         totalSupply.sub(_value);                              // Update totalSupply
