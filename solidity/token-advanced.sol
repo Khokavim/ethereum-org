@@ -1,7 +1,63 @@
 pragma solidity ^0.4.16;
 
+/**
+ * TokenERC223 standard. The ERC20 token standard has a fundamental issue as it has not addressed the token fallback possibility.
+ * Bob sends X tokens to Alices Ethereum address which may be a non-receiving token address and if it is, X tokens sent are lost forever.
+ * Not until recently, Dexeran(Github alias) an Ethereum Classic (ETC) developer, used some inline assembly(within solidity) to fix this issue.
+ * It is implemented such that there may be a token fallback to the token sender just as the case is for sending Ether accross Ether addresses.
+ *
+ */
+
+ /**
+  * Math operations with safety checks
+  */
+ library SafeMath {
+   function mul(uint256 a, uint256 b) public pure returns (uint256) {
+     uint256 c = a * b;
+     assert(a == 0 || c / a == b);
+     return c;
+   }
+
+   function div(uint256 a, uint256 b) public pure returns (uint256) {
+     // assert(b > 0); // Solidity automatically throws when dividing by 0
+     uint256 c = a / b;
+     // assert(a == b * c + a % b); // There is no case in which this doesn't hold
+     return c;
+   }
+
+   function sub(uint256 a, uint256 b) public pure returns (uint256) {
+     assert(b <= a);
+     return a - b;
+   }
+
+   function add(uint256 a, uint256 b) public pure returns (uint256) {
+     uint256 c = a + b;
+     assert(c >= a);
+     return c;
+   }
+
+   function max64(uint64 a, uint64 b) public pure returns (uint64) {
+     return a >= b ? a : b;
+   }
+
+   function min64(uint64 a, uint64 b) public pure returns (uint64) {
+     return a < b ? a : b;
+   }
+
+   function max256(uint256 a, uint256 b) public pure returns (uint256) {
+     return a >= b ? a : b;
+   }
+
+   function min256(uint256 a, uint256 b) internal returns (uint256) {
+     return a < b ? a : b;
+   }
+
+ }
+
 contract owned {
     address public owner;
+
+    event LogOwnershipTransfer(address indexed newOwner);
 
     function owned() public {
         owner = msg.sender;
@@ -14,12 +70,24 @@ contract owned {
 
     function transferOwnership(address newOwner) onlyOwner public {
         owner = newOwner;
+        emit LogOwnershipTransfer(newOwner);
     }
 }
 
-interface tokenRecipient { function receiveApproval(address _from, uint256 _value, address _token, bytes _extraData) public; }
+interface tokenRecipient {
+  //Kindly implement the functions of this interface as you may like
+  function receiveApproval(address _from, uint256 _value, address _token, bytes _extraData) external;
+}
 
-contract TokenERC20 {
+interface ERC223Receiver {
+  //Kindly implement the functions of this interface as you may like
+  function tokenFallback(address indexed _from, uint256 _value, bytes _data);
+}
+
+contract TokenERC223 {
+   //We will use the imported SafeMath library to check for overflows/underflows
+    using SafeMath for uint256;
+
     // Public variables of the token
     string public name;
     string public symbol;
@@ -56,34 +124,28 @@ contract TokenERC20 {
     /**
      * Internal transfer, only can be called by this contract
      */
-    function _transfer(address _from, address _to, uint _value) internal {
-        // Prevent transfer to 0x0 address. Use burn() instead
-        require(_to != 0x0);
-        // Check if the sender has enough
-        require(balanceOf[_from] >= _value);
+    function transfer(address _from, address _to, uint _value, bytes _extraData) public {
+        // Prevent transfer to 0x0 address. Use burn() instead and the sender has enough
+        require(_to != 0x0 && balanceOf[_from] >= _value);
         // Check for overflows
-        require(balanceOf[_to] + _value > balanceOf[_to]);
-        // Save this for an assertion in the future
-        uint previousBalances = balanceOf[_from] + balanceOf[_to];
-        // Subtract from the sender
-        balanceOf[_from] -= _value;
-        // Add the same to the recipient
-        balanceOf[_to] += _value;
-        Transfer(_from, _to, _value);
-        // Asserts are used to use static analysis to find bugs in your code. They should never fail
-        assert(balanceOf[_from] + balanceOf[_to] == previousBalances);
-    }
+        require(balanceOf[_to].add(_value) > balanceOf[_to]);
 
-    /**
-     * Transfer tokens
-     *
-     * Send `_value` tokens to `_to` from your account
-     *
-     * @param _to The address of the recipient
-     * @param _value the amount to send
-     */
-    function transfer(address _to, uint256 _value) public {
-        _transfer(msg.sender, _to, _value);
+        uint codelength;
+
+        balanceOf[msg.sender]=balanceOf[msg.sender].sub(_value);
+        balanceOf[_to]=balanceOf[_to].add(_value);
+
+        //Recieve the code size of _to, this needs assembly
+        assembly{
+            codelength:=extcodesize(_to)
+        }
+
+        if(codelength>0){
+            ERC223Receiver receiver=ERC223Receiver(_to);
+            receiver.tokenFallback(msg.sender,_value, _data);
+        }
+
+        emit Transfer(_from, _to, _value);
     }
 
     /**
@@ -97,8 +159,8 @@ contract TokenERC20 {
      */
     function transferFrom(address _from, address _to, uint256 _value) public returns (bool success) {
         require(_value <= allowance[_from][msg.sender]);     // Check allowance
-        allowance[_from][msg.sender] -= _value;
-        _transfer(_from, _to, _value);
+        allowance[_from][msg.sender].sub(_value);
+        transfer(_from, _to, _value);
         return true;
     }
 
@@ -144,8 +206,8 @@ contract TokenERC20 {
      */
     function burn(uint256 _value) public returns (bool success) {
         require(balanceOf[msg.sender] >= _value);   // Check if the sender has enough
-        balanceOf[msg.sender] -= _value;            // Subtract from the sender
-        totalSupply -= _value;                      // Updates totalSupply
+        balanceOf[msg.sender].sub(_value);            // Subtract from the sender
+        totalSupply.sub(_value);                      // Updates totalSupply
         Burn(msg.sender, _value);
         return true;
     }
@@ -161,9 +223,9 @@ contract TokenERC20 {
     function burnFrom(address _from, uint256 _value) public returns (bool success) {
         require(balanceOf[_from] >= _value);                // Check if the targeted balance is enough
         require(_value <= allowance[_from][msg.sender]);    // Check allowance
-        balanceOf[_from] -= _value;                         // Subtract from the targeted balance
-        allowance[_from][msg.sender] -= _value;             // Subtract from the sender's allowance
-        totalSupply -= _value;                              // Update totalSupply
+        balanceOf[_from].sub(_value);                         // Subtract from the targeted balance
+        allowance[_from][msg.sender].sub(_value);             // Subtract from the sender's allowance
+        totalSupply.sub(_value);                              // Update totalSupply
         Burn(_from, _value);
         return true;
     }
@@ -173,7 +235,9 @@ contract TokenERC20 {
 /*       ADVANCED TOKEN STARTS HERE       */
 /******************************************/
 
-contract MyAdvancedToken is owned, TokenERC20 {
+contract MyAdvancedToken is owned, TokenERC223 {
+
+    using SafeMath for uint256;
 
     uint256 public sellPrice;
     uint256 public buyPrice;
@@ -190,24 +254,12 @@ contract MyAdvancedToken is owned, TokenERC20 {
         string tokenSymbol
     ) TokenERC20(initialSupply, tokenName, tokenSymbol) public {}
 
-    /* Internal transfer, only can be called by this contract */
-    function _transfer(address _from, address _to, uint _value) internal {
-        require (_to != 0x0);                               // Prevent transfer to 0x0 address. Use burn() instead
-        require (balanceOf[_from] >= _value);               // Check if the sender has enough
-        require (balanceOf[_to] + _value >= balanceOf[_to]); // Check for overflows
-        require(!frozenAccount[_from]);                     // Check if sender is frozen
-        require(!frozenAccount[_to]);                       // Check if recipient is frozen
-        balanceOf[_from] -= _value;                         // Subtract from the sender
-        balanceOf[_to] += _value;                           // Add the same to the recipient
-        Transfer(_from, _to, _value);
-    }
-
     /// @notice Create `mintedAmount` tokens and send it to `target`
     /// @param target Address to receive the tokens
     /// @param mintedAmount the amount of tokens it will receive
     function mintToken(address target, uint256 mintedAmount) onlyOwner public {
-        balanceOf[target] += mintedAmount;
-        totalSupply += mintedAmount;
+        balanceOf[target].add(mintedAmount);
+        totalSupply.add(mintedAmount);
         Transfer(0, this, mintedAmount);
         Transfer(this, target, mintedAmount);
     }
@@ -230,15 +282,15 @@ contract MyAdvancedToken is owned, TokenERC20 {
 
     /// @notice Buy tokens from contract by sending ether
     function buy() payable public {
-        uint amount = msg.value / buyPrice;               // calculates the amount
-        _transfer(this, msg.sender, amount);              // makes the transfers
+        uint amount = msg.value.div(buyPrice);               // calculates the amount
+        transfer(this, msg.sender, amount, bytes _extraData);              // makes the transfers
     }
 
     /// @notice Sell `amount` tokens to contract
     /// @param amount amount of tokens to be sold
     function sell(uint256 amount) public {
-        require(this.balance >= amount * sellPrice);      // checks if the contract has enough ether to buy
-        _transfer(msg.sender, this, amount);              // makes the transfers
-        msg.sender.transfer(amount * sellPrice);          // sends ether to the seller. It's important to do this last to avoid recursion attacks
+        require(this.balance >= amount.mul(sellPrice));      // checks if the contract has enough ether to buy
+        transfer(msg.sender, this, amount);              // makes the transfers
+        msg.sender.transfer(amount.mul(sellPrice));          // sends ether to the seller. It's important to do this last to avoid recursion attacks
     }
 }
